@@ -1,16 +1,13 @@
 import os
 import sys
 import threading
-import asyncio
-import logging
 import subprocess
-import signal
 import time
-import json
+import logging
 import requests
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ApplicationBuilder, JobQueue
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ApplicationBuilder
 
 # ================= 引入数据库配置 =================
 from config import BOT_TOKEN, DATABASE_URL
@@ -36,7 +33,7 @@ def init_db():
             id SERIAL PRIMARY KEY,
             bot_token TEXT REFERENCES bots(token) ON DELETE CASCADE,
             label TEXT NOT NULL,
-            action_type TEXT NOT NULL, -- 'reply_text', 'url'
+            action_type TEXT NOT NULL,
             action_data TEXT NOT NULL,
             position INTEGER DEFAULT 0
         )
@@ -56,89 +53,64 @@ def init_db():
 
 init_db()
 
-# 主控与子进程分离启动
+# 子进程与主控分离启动
 if len(sys.argv) > 1 and sys.argv[1] == "--client":
-    # ================= 子进程模式（客户机器人） =================
-    CLIENT_TOKEN = sys.argv[2] if len(sys.argv) > 2 else ""
+    CLIENT_TOKEN = sys.argv[2]
     print(f"🟢 子进程启动，托管客户机器人: {CLIENT_TOKEN[:10]}...")
     
-    async def client_start_real(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        conn = get_db()
-        cur = conn.cursor()
+    async def client_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        conn = get_db(); cur = conn.cursor()
         cur.execute("SELECT welcome_text FROM bots WHERE token = %s", (CLIENT_TOKEN,))
-        row = cur.fetchone()
-        cur.close(); conn.close()
+        row = cur.fetchone(); cur.close(); conn.close()
         welcome = row[0] if row else "欢迎使用！"
         
-        # 加载内联按钮
         cur = conn.cursor()
         cur.execute("SELECT id, label FROM buttons WHERE bot_token = %s ORDER BY position", (CLIENT_TOKEN,))
-        btn_rows = cur.fetchall()
-        cur.close(); conn.close()
+        btn_rows = cur.fetchall(); cur.close(); conn.close()
+        keyboard = [[InlineKeyboardButton(label, callback_data=str(bid))] for bid, label in btn_rows]
         
-        keyboard = []
-        for bid, label in btn_rows:
-            keyboard.append([InlineKeyboardButton(label, callback_data=str(bid))])
-        
-        # 加载底部键盘
         cur = conn.cursor()
         cur.execute("SELECT label FROM reply_keyboards WHERE bot_token = %s ORDER BY position", (CLIENT_TOKEN,))
-        kb_rows = cur.fetchall()
-        cur.close(); conn.close()
-        
-        reply_kb = None
-        if kb_rows:
-            reply_kb = ReplyKeyboardMarkup([[r[0]] for r in kb_rows], resize_keyboard=True)
+        kb_rows = cur.fetchall(); cur.close(); conn.close()
+        reply_kb = ReplyKeyboardMarkup([[r[0]] for r in kb_rows], resize_keyboard=True) if kb_rows else None
         
         await update.message.reply_text(welcome, reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None)
-        if reply_kb:
-            await update.message.reply_text("🟢 底部菜单已加载", reply_markup=reply_kb)
+        if reply_kb: await update.message.reply_text("🟢 底部菜单已加载", reply_markup=reply_kb)
 
-    async def client_button_real(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def client_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
         bid = int(query.data)
-        conn = get_db()
-        cur = conn.cursor()
+        conn = get_db(); cur = conn.cursor()
         cur.execute("SELECT action_type, action_data FROM buttons WHERE bot_token = %s AND id = %s", (CLIENT_TOKEN, bid))
-        row = cur.fetchone()
-        cur.close(); conn.close()
+        row = cur.fetchone(); cur.close(); conn.close()
         if row:
             a_type, a_data = row
-            if a_type == "reply_text":
-                await query.edit_message_text(a_data)
-            elif a_type == "url":
-                await query.edit_message_text(f"🔗 点击跳转：{a_data}")
+            if a_type == "reply_text": await query.edit_message_text(a_data)
+            elif a_type == "url": await query.edit_message_text(f"🔗 点击跳转：{a_data}")
     
-    async def client_message_real(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def client_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_text = update.message.text
-        conn = get_db()
-        cur = conn.cursor()
+        conn = get_db(); cur = conn.cursor()
         cur.execute("SELECT reply_text FROM reply_keyboards WHERE bot_token = %s AND label = %s", (CLIENT_TOKEN, user_text))
-        row = cur.fetchone()
-        cur.close(); conn.close()
-        if row:
-            await update.message.reply_text(row[0])
+        row = cur.fetchone(); cur.close(); conn.close()
+        if row: await update.message.reply_text(row[0])
 
-    client_app = Application.builder().token(CLIENT_TOKEN).build()
-    client_app.add_handler(CommandHandler("start", client_start_real))
-    client_app.add_handler(CallbackQueryHandler(client_button_real))
-    client_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, client_message_real))
-    print("✅ 客户机器人已激活，等待指令...")
+    client_app = ApplicationBuilder().token(CLIENT_TOKEN).build()
+    client_app.add_handler(CommandHandler("start", client_start))
+    client_app.add_handler(CallbackQueryHandler(client_button))
+    client_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, client_message))
+    print("✅ 客户机器人已激活")
     client_app.run_polling()
     sys.exit(0)
 
 # ================= 主控模式（宫水编辑器） =================
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-print("🚀 主控模式启动，宫水编辑器上线！")
-
-# Flask 保活
 app = Flask(__name__)
 @app.route('/')
 def home(): return "Editor Running"
 def run_flask(): app.run(host="0.0.0.0", port=8080)
 
-# 子进程管理
 active_processes = {}
 
 def start_client_bot(token):
@@ -147,23 +119,19 @@ def start_client_bot(token):
     active_processes[token] = proc
     print(f"✅ 子进程已启动: {token[:10]}...")
 
-def stop_client_bot(token):
-    if token in active_processes:
-        active_processes[token].terminate()
-        time.sleep(1)
-        active_processes[token].kill()
-        del active_processes[token]
-        print(f"🛑 子进程已停止: {token[:10]}...")
-
-async def monitor_bots(context: ContextTypes.DEFAULT_TYPE):
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT token FROM bots")
-    rows = cur.fetchall()
-    cur.close(); conn.close()
-    for (token,) in rows:
-        if token not in active_processes:
-            start_client_bot(token)
+# ================= 终极修复：用原生的死循环线程代替定时任务 =================
+def monitor_loop():
+    while True:
+        try:
+            conn = get_db(); cur = conn.cursor()
+            cur.execute("SELECT token FROM bots")
+            rows = cur.fetchall(); cur.close(); conn.close()
+            for (token,) in rows:
+                if token not in active_processes:
+                    start_client_bot(token)
+        except Exception as e:
+            logging.error(f"监控线程出错: {e}")
+        time.sleep(60)  # 每60秒检查一次子进程是否还活着
 
 # ================= 主控指令 =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -181,13 +149,10 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn = get_db(); cur = conn.cursor()
         cur.execute("SELECT id, token, welcome_text FROM bots")
         rows = cur.fetchall(); cur.close(); conn.close()
-        if not rows:
-            await query.edit_message_text("📭 暂时还没有添加任何机器人。")
-            return
-        keyboard = []
-        for bid, token, _ in rows:
-            keyboard.append([InlineKeyboardButton(f"机器人 #{bid} ({token[:8]}...)", callback_data=f"config_{bid}")])
-        await query.edit_message_text("📋 已绑定的机器人列表：", reply_markup=InlineKeyboardMarkup(keyboard))
+        if not rows: await query.edit_message_text("📭 暂时还没有添加任何机器人。")
+        else:
+            keyboard = [[InlineKeyboardButton(f"机器人 #{bid} ({token[:8]}...)", callback_data=f"config_{bid}")] for bid, token, _ in rows]
+            await query.edit_message_text("📋 已绑定的机器人列表：", reply_markup=InlineKeyboardMarkup(keyboard))
     elif data.startswith("config_"):
         bid = int(data.split("_")[1])
         context.user_data['config_bid'] = bid
@@ -221,7 +186,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         row = cur.fetchone()
         if row:
             token = row[0]
-            stop_client_bot(token)
+            if token in active_processes: active_processes[token].terminate()
             cur.execute("DELETE FROM bots WHERE id = %s", (bid,))
             conn.commit()
         cur.close(); conn.close()
@@ -247,7 +212,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.commit(); cur.close(); conn.close()
         start_client_bot(token)
         context.user_data.pop('state')
-        await update.message.reply_text(f"✅ 机器人已绑定并启动！")
+        await update.message.reply_text("✅ 机器人已绑定并启动！")
     elif state == 'add_btn_label':
         bid = context.user_data.get('add_btn_bid')
         label = text.strip()
@@ -316,20 +281,21 @@ async def handle_message_after(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(f"✅ 按钮[{label}]已添加！")
 
 def main():
+    # 1. 启动 Flask 网页保活
     threading.Thread(target=run_flask, daemon=True).start()
-    # ✨ 彻底修复崩溃的核心修改：显式声明并绑定 JobQueue，并且依赖库已包含 [job-queue]
-    application = ApplicationBuilder().token(BOT_TOKEN).job_queue(JobQueue()).build()
-    
+
+    # 2. 启动后台监控线程（替代 JobQueue，用死循环+等待60秒）
+    threading.Thread(target=monitor_loop, daemon=True).start()
+
+    # 3. 启动 Telegram 机器人（完全不依赖 JobQueue 定时器）
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button_click))
     application.add_handler(CallbackQueryHandler(btn_type_callback, pattern="^btn_type_"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message_after))
 
-    # 启动监控定时任务
-    application.job_queue.run_repeating(monitor_bots, interval=60, first=5)
-
-    logging.info("✅ 宫水编辑器已上线！")
+    logging.info("✅ 宫水编辑器（原生线程版）已上线！")
     application.run_polling()
 
 if __name__ == "__main__":
