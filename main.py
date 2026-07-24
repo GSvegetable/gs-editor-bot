@@ -84,26 +84,62 @@ def monitor_loop():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
-    user_name = user.first_name or "未命名"
+    # 修复：同时获取名和姓
+    full_name = user.full_name if user.full_name else (user.first_name or "未命名")
     
-    # 删除机器人数量统计和 /ck 提示，严格按排版
     welcome_text = (
         f"欢迎使用宫水编辑器\n"
         f"帮您高度自定义电报机器人\n\n"
-        f"您的名字 {user_name}\n"
+        f"您的名字 {full_name}\n"
         f"您的ID <code>{user_id}</code>"
     )
 
-    # 生成4个按钮（两行两列），文字精确无表情
+    # 首页只剩三个按钮，去掉了“添加新机器人”
     keyboard = [
-        [InlineKeyboardButton("添加新机器人", callback_data="add_bot"),
-         InlineKeyboardButton("我的机器人列表", callback_data="list_bots")],
+        [InlineKeyboardButton("机器人列表", callback_data="list_bots")],
         [InlineKeyboardButton("联系开发者", url="https://t.me/gsyxyc"),
-         InlineKeyboardButton("拉取机器人数据", callback_data="fetch_data")]
+         InlineKeyboardButton("机器人数据", callback_data="fetch_data")]
     ]
     await update.message.reply_text(
         welcome_text,
         parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+# ================= 二级菜单（机器人列表） =================
+async def show_bot_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT id, token, welcome_text FROM bots WHERE owner_id = %s", (str(user_id),))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    if not rows:
+        # 空状态
+        await update.callback_query.edit_message_text(
+            "我管理的机器人\n\n您还未添加机器人",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("添加", callback_data="add_bot_from_list")],
+                [InlineKeyboardButton("返回首页", callback_data="home")]
+            ])
+        )
+        return
+
+    # 构建列表
+    msg = "我管理的机器人\n\n"
+    for bid, token, _ in rows:
+        msg += f"{bid} {token[:8]}... 正常运转\n"
+
+    # 列表底部按钮
+    keyboard = [
+        [InlineKeyboardButton("添加", callback_data="add_bot_from_list")],
+        [InlineKeyboardButton("删除", callback_data="del_bot_enter_id")],
+        [InlineKeyboardButton("返回首页", callback_data="home")]
+    ]
+    await update.callback_query.edit_message_text(
+        msg,
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
@@ -112,34 +148,34 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
-    user_id = update.effective_user.id
 
-    if data == "add_bot":
-        # 原地修改，丝滑转场，无冒号，文本精确
-        context.user_data['state'] = 'waiting_token'
-        await query.edit_message_text(
-            "请发送机器人的API",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("返回首页", callback_data="home")]
-            ])
-        )
-    elif data == "home":
-        # 返回首页
+    if data == "home":
+        # 完全重置状态并返回到首页
         await start(update, context)
         
     elif data == "list_bots":
-        conn = get_db()
-        cur = conn.cursor()
-        cur.execute("SELECT id, token, welcome_text FROM bots")
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
-        if not rows:
-            await query.edit_message_text("📭 暂时还没有添加任何机器人。")
-        else:
-            keyboard = [[InlineKeyboardButton(f"机器人 #{bid} ({token[:8]}...)", callback_data=f"config_{bid}")] for bid, token, _ in rows]
-            await query.edit_message_text("📋 已绑定的机器人列表：", reply_markup=InlineKeyboardMarkup(keyboard))
-    
+        await show_bot_list(update, context)
+
+    elif data == "add_bot_from_list":
+        # 新发一条消息，而不是原地修改
+        context.user_data['state'] = 'waiting_token'
+        await update.message.reply_text(
+            "请发送机器人的API",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("返回列表", callback_data="list_bots")]
+            ])
+        )
+
+    elif data == "del_bot_enter_id":
+        # 新发一条消息，进入删除流程
+        context.user_data['state'] = 'waiting_del_id'
+        await update.message.reply_text(
+            "请发送机器人ID",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("取消", callback_data="list_bots")]
+            ])
+        )
+
     elif data.startswith("config_"):
         bid = int(data.split("_")[1])
         context.user_data['config_bid'] = bid
@@ -186,42 +222,34 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cur.close()
         conn.close()
         await query.edit_message_text("✅ 机器人已删除。")
+        # 删除后自动刷新列表
+        await show_bot_list(update, context)
 
     elif data == "fetch_data":
-        # 留空，后续再做
         await query.edit_message_text("🔧 功能开发中，请期待后续版本。")
 
+# ================= 处理用户输入（API添加 和 删除） =================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
     state = context.user_data.get('state')
-    
+
     if state == 'waiting_token':
         token = text.strip()
-        # 自动检测是否为合法 API Token
         try:
             resp = requests.get(f"https://api.telegram.org/bot{token}/getMe", timeout=10)
             if resp.status_code != 200:
-                # 添加失败
-                await update.message.reply_text(
-                    "添加失败",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("重新添加", callback_data="add_bot")]
-                    ])
-                )
-                context.user_data.pop('state')
-                return
+                raise Exception("Invalid Token")
         except:
             await update.message.reply_text(
                 "添加失败",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("重新添加", callback_data="add_bot")]
+                    [InlineKeyboardButton("重新添加", callback_data="add_bot_from_list")]
                 ])
             )
             context.user_data.pop('state')
             return
         
-        # 入库
         conn = get_db()
         cur = conn.cursor()
         cur.execute("INSERT INTO bots (token, owner_id) VALUES (%s, %s) ON CONFLICT DO NOTHING", (token, str(user_id)))
@@ -233,7 +261,41 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "机器人添加成功 点击主菜单我的机器人查看"
         )
+        # 添加成功后自动刷新列表
+        await show_bot_list(update, context)
 
+    elif state == 'waiting_del_id':
+        # 删除流程
+        bid = text.strip()
+        try:
+            bid_int = int(bid)
+        except:
+            await update.message.reply_text("ID 格式错误，请输入纯数字 ID。")
+            return
+        
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT token FROM bots WHERE id = %s AND owner_id = %s", (bid_int, str(user_id)))
+        row = cur.fetchone()
+        if not row:
+            await update.message.reply_text("未找到该 ID 的机器人，请检查后重试。")
+            cur.close()
+            conn.close()
+            return
+
+        token = row[0]
+        if token in active_processes:
+            active_processes[token].terminate()
+            del active_processes[token]
+        cur.execute("DELETE FROM bots WHERE id = %s", (bid_int,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        context.user_data.pop('state')
+        await update.message.reply_text("✅ 机器人已删除。")
+        # 删除后自动刷新列表
+        await show_bot_list(update, context)
+        
     elif state == 'add_btn_label':
         bid = context.user_data.get('add_btn_bid')
         label = text.strip()
@@ -341,7 +403,7 @@ def main():
     application.add_handler(CallbackQueryHandler(kb_type_callback, pattern="^kb_type_"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message_after))
-    logging.info("✅ 宫水编辑器（最终界面版）已上线！")
+    logging.info("✅ 宫水编辑器（管理列表增强版）已上线！")
     application.run_polling()
 
 if __name__ == "__main__":
