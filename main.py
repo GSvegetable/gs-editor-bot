@@ -6,10 +6,9 @@ import time
 import logging
 import requests
 from flask import Flask
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ApplicationBuilder
 
-# ================= 引入数据库配置 =================
 from config import BOT_TOKEN, DATABASE_URL
 import psycopg2
 
@@ -17,109 +16,34 @@ def get_db():
     return psycopg2.connect(DATABASE_URL)
 
 def init_db():
-    conn = get_db()
-    cur = conn.cursor()
+    conn = get_db(); cur = conn.cursor()
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS bots (
-            id SERIAL PRIMARY KEY,
-            token TEXT UNIQUE NOT NULL,
-            owner_id TEXT NOT NULL,
-            welcome_text TEXT DEFAULT '欢迎使用！',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
+        CREATE TABLE IF NOT EXISTS bots (id SERIAL PRIMARY KEY, token TEXT UNIQUE NOT NULL, owner_id TEXT NOT NULL, welcome_text TEXT DEFAULT '欢迎使用！', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
     """)
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS buttons (
-            id SERIAL PRIMARY KEY,
-            bot_token TEXT REFERENCES bots(token) ON DELETE CASCADE,
-            label TEXT NOT NULL,
-            action_type TEXT NOT NULL,
-            action_data TEXT NOT NULL,
-            position INTEGER DEFAULT 0
-        )
+        CREATE TABLE IF NOT EXISTS buttons (id SERIAL PRIMARY KEY, bot_token TEXT REFERENCES bots(token) ON DELETE CASCADE, label TEXT NOT NULL, action_type TEXT NOT NULL, action_data TEXT NOT NULL, position INTEGER DEFAULT 0)
     """)
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS reply_keyboards (
-            id SERIAL PRIMARY KEY,
-            bot_token TEXT REFERENCES bots(token) ON DELETE CASCADE,
-            label TEXT NOT NULL,
-            reply_text TEXT NOT NULL,
-            position INTEGER DEFAULT 0
-        )
+        CREATE TABLE IF NOT EXISTS reply_keyboards (id SERIAL PRIMARY KEY, bot_token TEXT REFERENCES bots(token) ON DELETE CASCADE, label TEXT NOT NULL, action_type TEXT NOT NULL, action_data TEXT NOT NULL, position INTEGER DEFAULT 0)
     """)
-    conn.commit()
-    cur.close()
-    conn.close()
+    conn.commit(); cur.close(); conn.close()
 
 init_db()
 
-# 子进程与主控分离启动
-if len(sys.argv) > 1 and sys.argv[1] == "--client":
-    CLIENT_TOKEN = sys.argv[2]
-    print(f"🟢 子进程启动，托管客户机器人: {CLIENT_TOKEN[:10]}...")
-    
-    async def client_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        conn = get_db(); cur = conn.cursor()
-        cur.execute("SELECT welcome_text FROM bots WHERE token = %s", (CLIENT_TOKEN,))
-        row = cur.fetchone(); cur.close(); conn.close()
-        welcome = row[0] if row else "欢迎使用！"
-        
-        cur = conn.cursor()
-        cur.execute("SELECT id, label FROM buttons WHERE bot_token = %s ORDER BY position", (CLIENT_TOKEN,))
-        btn_rows = cur.fetchall(); cur.close(); conn.close()
-        keyboard = [[InlineKeyboardButton(label, callback_data=str(bid))] for bid, label in btn_rows]
-        
-        cur = conn.cursor()
-        cur.execute("SELECT label FROM reply_keyboards WHERE bot_token = %s ORDER BY position", (CLIENT_TOKEN,))
-        kb_rows = cur.fetchall(); cur.close(); conn.close()
-        reply_kb = ReplyKeyboardMarkup([[r[0]] for r in kb_rows], resize_keyboard=True) if kb_rows else None
-        
-        await update.message.reply_text(welcome, reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None)
-        if reply_kb: await update.message.reply_text("🟢 底部菜单已加载", reply_markup=reply_kb)
-
-    async def client_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        query = update.callback_query
-        await query.answer()
-        bid = int(query.data)
-        conn = get_db(); cur = conn.cursor()
-        cur.execute("SELECT action_type, action_data FROM buttons WHERE bot_token = %s AND id = %s", (CLIENT_TOKEN, bid))
-        row = cur.fetchone(); cur.close(); conn.close()
-        if row:
-            a_type, a_data = row
-            if a_type == "reply_text": await query.edit_message_text(a_data)
-            elif a_type == "url": await query.edit_message_text(f"🔗 点击跳转：{a_data}")
-    
-    async def client_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user_text = update.message.text
-        conn = get_db(); cur = conn.cursor()
-        cur.execute("SELECT reply_text FROM reply_keyboards WHERE bot_token = %s AND label = %s", (CLIENT_TOKEN, user_text))
-        row = cur.fetchone(); cur.close(); conn.close()
-        if row: await update.message.reply_text(row[0])
-
-    client_app = ApplicationBuilder().token(CLIENT_TOKEN).build()
-    client_app.add_handler(CommandHandler("start", client_start))
-    client_app.add_handler(CallbackQueryHandler(client_button))
-    client_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, client_message))
-    print("✅ 客户机器人已激活")
-    client_app.run_polling()
-    sys.exit(0)
-
-# ================= 主控模式（宫水编辑器） =================
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 app = Flask(__name__)
-@app.route('/')
+@app.route('/') 
 def home(): return "Editor Running"
 def run_flask(): app.run(host="0.0.0.0", port=8080)
 
 active_processes = {}
 
 def start_client_bot(token):
-    cmd = [sys.executable, "main.py", "--client", token]
+    # 👇 关键变化：现在调用的是新拆出来的 client.py
+    cmd = [sys.executable, "client.py", token]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     active_processes[token] = proc
     print(f"✅ 子进程已启动: {token[:10]}...")
 
-# ================= 终极修复：用原生的死循环线程代替定时任务 =================
 def monitor_loop():
     while True:
         try:
@@ -131,20 +55,17 @@ def monitor_loop():
                     start_client_bot(token)
         except Exception as e:
             logging.error(f"监控线程出错: {e}")
-        time.sleep(60)  # 每60秒检查一次子进程是否还活着
+        time.sleep(60)
 
-# ================= 主控指令 =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton("➕ 添加新机器人", callback_data="add_bot")], [InlineKeyboardButton("📋 我的机器人列表", callback_data="list_bots")]]
     await update.message.reply_text("👋 欢迎使用宫水编辑器！", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+    query = update.callback_query; await query.answer()
     data = query.data
     if data == "add_bot":
-        context.user_data['state'] = 'waiting_token'
-        await query.edit_message_text("📨 请发送客户机器人的 API Token：")
+        context.user_data['state'] = 'waiting_token'; await query.edit_message_text("📨 请发送客户机器人的 API Token：")
     elif data == "list_bots":
         conn = get_db(); cur = conn.cursor()
         cur.execute("SELECT id, token, welcome_text FROM bots")
@@ -165,19 +86,13 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         await query.edit_message_text(f"⚙️ 配置机器人 #{bid}：", reply_markup=InlineKeyboardMarkup(keyboard))
     elif data.startswith("add_btn_"):
-        bid = int(data.split("_")[2])
-        context.user_data['state'] = 'add_btn_label'
-        context.user_data['add_btn_bid'] = bid
+        bid = int(data.split("_")[2]); context.user_data['state'] = 'add_btn_label'; context.user_data['add_btn_bid'] = bid
         await query.edit_message_text("🔘 请输入按钮上的文字（如：立即咨询）：")
     elif data.startswith("add_kb_"):
-        bid = int(data.split("_")[2])
-        context.user_data['state'] = 'add_kb_label'
-        context.user_data['add_kb_bid'] = bid
-        await query.edit_message_text("⌨️ 请输入底部键盘的按钮文字（如：充值）：")
+        bid = int(data.split("_")[2]); context.user_data['state'] = 'add_kb_label'; context.user_data['add_kb_bid'] = bid
+        await query.edit_message_text("⌨️ 请输入底部键盘的按钮文字：")
     elif data.startswith("welcome_"):
-        bid = int(data.split("_")[1])
-        context.user_data['state'] = 'edit_welcome'
-        context.user_data['edit_welcome_bid'] = bid
+        bid = int(data.split("_")[1]); context.user_data['state'] = 'edit_welcome'; context.user_data['edit_welcome_bid'] = bid
         await query.edit_message_text("📝 请输入新的欢迎语文字：")
     elif data.startswith("del_bot_"):
         bid = int(data.split("_")[2])
@@ -187,115 +102,88 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if row:
             token = row[0]
             if token in active_processes: active_processes[token].terminate()
-            cur.execute("DELETE FROM bots WHERE id = %s", (bid,))
-            conn.commit()
+            cur.execute("DELETE FROM bots WHERE id = %s", (bid,)); conn.commit()
         cur.close(); conn.close()
         await query.edit_message_text("✅ 机器人已删除。")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    text = update.message.text
-    state = context.user_data.get('state')
-
+    user_id = update.effective_user.id; text = update.message.text; state = context.user_data.get('state')
     if state == 'waiting_token':
         token = text.strip()
         try:
             resp = requests.get(f"https://api.telegram.org/bot{token}/getMe", timeout=10)
-            if resp.status_code != 200:
-                await update.message.reply_text("❌ Token无效，请检查后重试。")
-                return
-        except:
-            await update.message.reply_text("❌ 网络错误，无法验证Token。")
-            return
+            if resp.status_code != 200: await update.message.reply_text("❌ Token无效，请检查后重试。"); return
+        except: await update.message.reply_text("❌ 网络错误，无法验证Token。"); return
         conn = get_db(); cur = conn.cursor()
         cur.execute("INSERT INTO bots (token, owner_id) VALUES (%s, %s) ON CONFLICT DO NOTHING", (token, str(user_id)))
         conn.commit(); cur.close(); conn.close()
-        start_client_bot(token)
-        context.user_data.pop('state')
-        await update.message.reply_text("✅ 机器人已绑定并启动！")
+        start_client_bot(token); context.user_data.pop('state')
+        await update.message.reply_text(f"✅ 机器人已绑定并启动！")
     elif state == 'add_btn_label':
-        bid = context.user_data.get('add_btn_bid')
-        label = text.strip()
-        context.user_data['add_btn_label'] = label
-        context.user_data['state'] = 'add_btn_type'
+        bid = context.user_data.get('add_btn_bid'); label = text.strip()
+        context.user_data['add_btn_label'] = label; context.user_data['state'] = 'add_btn_type'
         keyboard = [[InlineKeyboardButton("💬 回复文字", callback_data="btn_type_reply")], [InlineKeyboardButton("🔗 跳转链接", callback_data="btn_type_url")]]
         await update.message.reply_text(f"按钮名称：{label}\n点击后要做什么？", reply_markup=InlineKeyboardMarkup(keyboard))
     elif state == 'add_kb_label':
-        bid = context.user_data.get('add_kb_bid')
-        label = text.strip()
-        context.user_data['add_kb_label'] = label
-        context.user_data['state'] = 'add_kb_reply'
-        await update.message.reply_text(f"底部按钮：{label}\n点击后要回复什么文字？")
-    elif state == 'add_kb_reply':
-        bid = context.user_data.get('add_kb_bid')
-        label = context.user_data.get('add_kb_label')
-        reply = text.strip()
-        conn = get_db(); cur = conn.cursor()
-        cur.execute("SELECT token FROM bots WHERE id = %s", (bid,))
-        row = cur.fetchone()
-        if row:
-            token = row[0]
-            cur.execute("INSERT INTO reply_keyboards (bot_token, label, reply_text) VALUES (%s, %s, %s)", (token, label, reply))
-            conn.commit()
-        cur.close(); conn.close()
-        context.user_data.pop('state')
-        await update.message.reply_text(f"✅ 底部键盘[{label}]已添加！")
+        bid = context.user_data.get('add_kb_bid'); label = text.strip()
+        context.user_data['add_kb_label'] = label; context.user_data['state'] = 'add_kb_type'
+        keyboard = [[InlineKeyboardButton("💬 回复文字", callback_data="kb_type_reply")], [InlineKeyboardButton("🔗 跳转链接", callback_data="kb_type_url")]]
+        await update.message.reply_text(f"底部按钮：{label}\n点击后要做什么？", reply_markup=InlineKeyboardMarkup(keyboard))
     elif state == 'edit_welcome':
-        bid = context.user_data.get('edit_welcome_bid')
-        new_welcome = text.strip()
+        bid = context.user_data.get('edit_welcome_bid'); new_welcome = text.strip()
         conn = get_db(); cur = conn.cursor()
-        cur.execute("UPDATE bots SET welcome_text = %s WHERE id = %s", (new_welcome, bid))
-        conn.commit(); cur.close(); conn.close()
-        context.user_data.pop('state')
+        cur.execute("UPDATE bots SET welcome_text = %s WHERE id = %s", (new_welcome, bid)); conn.commit()
+        cur.close(); conn.close(); context.user_data.pop('state')
         await update.message.reply_text("✅ 欢迎语已更新！")
 
 async def btn_type_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+    query = update.callback_query; await query.answer()
     data = query.data
-    if data == "btn_type_reply":
-        context.user_data['state'] = 'add_btn_data'
-        context.user_data['btn_type'] = 'reply_text'
-        await query.edit_message_text("📝 请输入点击按钮后要回复的文字：")
-    elif data == "btn_type_url":
-        context.user_data['state'] = 'add_btn_data'
-        context.user_data['btn_type'] = 'url'
-        await query.edit_message_text("🔗 请输入跳转链接：")
+    if data == "btn_type_reply": context.user_data['state'] = 'add_btn_data'; context.user_data['btn_type'] = 'reply_text'; await query.edit_message_text("📝 请输入点击按钮后要回复的文字：")
+    elif data == "btn_type_url": context.user_data['state'] = 'add_btn_data'; context.user_data['btn_type'] = 'url'; await query.edit_message_text("🔗 请输入跳转链接：")
+
+async def kb_type_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query; await query.answer()
+    data = query.data
+    if data == "kb_type_reply": context.user_data['state'] = 'add_kb_data'; context.user_data['kb_type'] = 'reply_text'; await query.edit_message_text("📝 请输入点击后要回复的文字：")
+    elif data == "kb_type_url": context.user_data['state'] = 'add_kb_data'; context.user_data['kb_type'] = 'url'; await query.edit_message_text("🔗 请输入跳转链接：")
 
 async def handle_message_after(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = context.user_data.get('state')
     if state == 'add_btn_data':
-        bid = context.user_data.get('add_btn_bid')
-        label = context.user_data.get('add_btn_label')
-        btn_type = context.user_data.get('btn_type')
-        data = update.message.text.strip()
+        bid = context.user_data.get('add_btn_bid'); label = context.user_data.get('add_btn_label')
+        btn_type = context.user_data.get('btn_type'); data = update.message.text.strip()
         conn = get_db(); cur = conn.cursor()
         cur.execute("SELECT token FROM bots WHERE id = %s", (bid,))
         row = cur.fetchone()
         if row:
             token = row[0]
-            cur.execute("INSERT INTO buttons (bot_token, label, action_type, action_data) VALUES (%s, %s, %s, %s)", (token, label, btn_type, data))
-            conn.commit()
-        cur.close(); conn.close()
-        context.user_data.pop('state')
+            cur.execute("INSERT INTO buttons (bot_token, label, action_type, action_data) VALUES (%s, %s, %s, %s)", (token, label, btn_type, data)); conn.commit()
+        cur.close(); conn.close(); context.user_data.pop('state')
         await update.message.reply_text(f"✅ 按钮[{label}]已添加！")
+    elif state == 'add_kb_data':
+        bid = context.user_data.get('add_kb_bid'); label = context.user_data.get('add_kb_label')
+        kb_type = context.user_data.get('kb_type'); data = update.message.text.strip()
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("SELECT token FROM bots WHERE id = %s", (bid,))
+        row = cur.fetchone()
+        if row:
+            token = row[0]
+            cur.execute("INSERT INTO reply_keyboards (bot_token, label, action_type, action_data) VALUES (%s, %s, %s, %s)", (token, label, kb_type, data)); conn.commit()
+        cur.close(); conn.close(); context.user_data.pop('state')
+        await update.message.reply_text(f"✅ 底部键盘[{label}]已添加！")
 
 def main():
-    # 1. 启动 Flask 网页保活
     threading.Thread(target=run_flask, daemon=True).start()
-
-    # 2. 启动后台监控线程（替代 JobQueue，用死循环+等待60秒）
     threading.Thread(target=monitor_loop, daemon=True).start()
-
-    # 3. 启动 Telegram 机器人（完全不依赖 JobQueue 定时器）
     application = ApplicationBuilder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button_click))
     application.add_handler(CallbackQueryHandler(btn_type_callback, pattern="^btn_type_"))
+    application.add_handler(CallbackQueryHandler(kb_type_callback, pattern="^kb_type_"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message_after))
-
-    logging.info("✅ 宫水编辑器（原生线程版）已上线！")
+    logging.info("✅ 宫水编辑器（双文件拆分版）已上线！")
     application.run_polling()
 
 if __name__ == "__main__":
