@@ -10,7 +10,7 @@ import json
 import requests
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ApplicationBuilder
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ApplicationBuilder, JobQueue
 
 # ================= 引入数据库配置 =================
 from config import BOT_TOKEN, DATABASE_URL
@@ -62,50 +62,6 @@ if len(sys.argv) > 1 and sys.argv[1] == "--client":
     CLIENT_TOKEN = sys.argv[2] if len(sys.argv) > 2 else ""
     print(f"🟢 子进程启动，托管客户机器人: {CLIENT_TOKEN[:10]}...")
     
-    async def client_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user_id = update.effective_user.id
-        conn = get_db()
-        cur = conn.cursor()
-        cur.execute("SELECT welcome_text FROM bots WHERE token = %s", (CLIENT_TOKEN,))
-        row = cur.fetchone()
-        cur.close(); conn.close()
-        if row:
-            await update.message.reply_text(row[0])
-        else:
-            await update.message.reply_text("欢迎使用！")
-
-    async def client_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        query = update.callback_query
-        await query.answer()
-        bot_token = CLIENT_TOKEN
-        data = query.data
-        conn = get_db()
-        cur = conn.cursor()
-        cur.execute("SELECT action_type, action_data FROM buttons WHERE bot_token = %s AND id = %s", (bot_token, int(data)))
-        row = cur.fetchone()
-        cur.close(); conn.close()
-        if row:
-            a_type, a_data = row
-            if a_type == "reply_text":
-                await query.edit_message_text(a_data)
-            elif a_type == "url":
-                await query.edit_message_text(f"🔗 点击打开链接：{a_data}")
-            else:
-                await query.edit_message_text("该按钮暂未配置动作。")
-
-    async def client_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user_text = update.message.text
-        # 检测底部键盘触发
-        conn = get_db()
-        cur = conn.cursor()
-        cur.execute("SELECT reply_text FROM reply_keyboards WHERE bot_token = %s AND label = %s", (CLIENT_TOKEN, user_text))
-        row = cur.fetchone()
-        cur.close(); conn.close()
-        if row:
-            await update.message.reply_text(row[0])
-        else:
-            pass
-
     async def client_start_real(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn = get_db()
         cur = conn.cursor()
@@ -186,7 +142,6 @@ def run_flask(): app.run(host="0.0.0.0", port=8080)
 active_processes = {}
 
 def start_client_bot(token):
-    # 启动子进程
     cmd = [sys.executable, "main.py", "--client", token]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     active_processes[token] = proc
@@ -212,28 +167,20 @@ async def monitor_bots(context: ContextTypes.DEFAULT_TYPE):
 
 # ================= 主控指令 =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton("➕ 添加新机器人", callback_data="add_bot")],
-        [InlineKeyboardButton("📋 我的机器人列表", callback_data="list_bots")]
-    ]
+    keyboard = [[InlineKeyboardButton("➕ 添加新机器人", callback_data="add_bot")], [InlineKeyboardButton("📋 我的机器人列表", callback_data="list_bots")]]
     await update.message.reply_text("👋 欢迎使用宫水编辑器！", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
-    user_id = query.from_user.id
-
     if data == "add_bot":
         context.user_data['state'] = 'waiting_token'
         await query.edit_message_text("📨 请发送客户机器人的 API Token：")
-
     elif data == "list_bots":
-        conn = get_db()
-        cur = conn.cursor()
+        conn = get_db(); cur = conn.cursor()
         cur.execute("SELECT id, token, welcome_text FROM bots")
-        rows = cur.fetchall()
-        cur.close(); conn.close()
+        rows = cur.fetchall(); cur.close(); conn.close()
         if not rows:
             await query.edit_message_text("📭 暂时还没有添加任何机器人。")
             return
@@ -241,7 +188,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for bid, token, _ in rows:
             keyboard.append([InlineKeyboardButton(f"机器人 #{bid} ({token[:8]}...)", callback_data=f"config_{bid}")])
         await query.edit_message_text("📋 已绑定的机器人列表：", reply_markup=InlineKeyboardMarkup(keyboard))
-
     elif data.startswith("config_"):
         bid = int(data.split("_")[1])
         context.user_data['config_bid'] = bid
@@ -253,29 +199,24 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("⬅️ 返回列表", callback_data="list_bots")]
         ]
         await query.edit_message_text(f"⚙️ 配置机器人 #{bid}：", reply_markup=InlineKeyboardMarkup(keyboard))
-
     elif data.startswith("add_btn_"):
         bid = int(data.split("_")[2])
         context.user_data['state'] = 'add_btn_label'
         context.user_data['add_btn_bid'] = bid
         await query.edit_message_text("🔘 请输入按钮上的文字（如：立即咨询）：")
-
     elif data.startswith("add_kb_"):
         bid = int(data.split("_")[2])
         context.user_data['state'] = 'add_kb_label'
         context.user_data['add_kb_bid'] = bid
         await query.edit_message_text("⌨️ 请输入底部键盘的按钮文字（如：充值）：")
-
     elif data.startswith("welcome_"):
         bid = int(data.split("_")[1])
         context.user_data['state'] = 'edit_welcome'
         context.user_data['edit_welcome_bid'] = bid
         await query.edit_message_text("📝 请输入新的欢迎语文字：")
-
     elif data.startswith("del_bot_"):
         bid = int(data.split("_")[2])
-        conn = get_db()
-        cur = conn.cursor()
+        conn = get_db(); cur = conn.cursor()
         cur.execute("SELECT token FROM bots WHERE id = %s", (bid,))
         row = cur.fetchone()
         if row:
@@ -293,7 +234,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if state == 'waiting_token':
         token = text.strip()
-        # 验证Token有效性
         try:
             resp = requests.get(f"https://api.telegram.org/bot{token}/getMe", timeout=10)
             if resp.status_code != 200:
@@ -302,41 +242,30 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             await update.message.reply_text("❌ 网络错误，无法验证Token。")
             return
-        # 入库
-        conn = get_db()
-        cur = conn.cursor()
+        conn = get_db(); cur = conn.cursor()
         cur.execute("INSERT INTO bots (token, owner_id) VALUES (%s, %s) ON CONFLICT DO NOTHING", (token, str(user_id)))
-        conn.commit()
-        cur.close(); conn.close()
-        # 启动子进程
+        conn.commit(); cur.close(); conn.close()
         start_client_bot(token)
         context.user_data.pop('state')
         await update.message.reply_text(f"✅ 机器人已绑定并启动！")
-
     elif state == 'add_btn_label':
         bid = context.user_data.get('add_btn_bid')
         label = text.strip()
         context.user_data['add_btn_label'] = label
         context.user_data['state'] = 'add_btn_type'
-        keyboard = [
-            [InlineKeyboardButton("💬 回复文字", callback_data="btn_type_reply")],
-            [InlineKeyboardButton("🔗 跳转链接", callback_data="btn_type_url")]
-        ]
+        keyboard = [[InlineKeyboardButton("💬 回复文字", callback_data="btn_type_reply")], [InlineKeyboardButton("🔗 跳转链接", callback_data="btn_type_url")]]
         await update.message.reply_text(f"按钮名称：{label}\n点击后要做什么？", reply_markup=InlineKeyboardMarkup(keyboard))
-
     elif state == 'add_kb_label':
         bid = context.user_data.get('add_kb_bid')
         label = text.strip()
         context.user_data['add_kb_label'] = label
         context.user_data['state'] = 'add_kb_reply'
         await update.message.reply_text(f"底部按钮：{label}\n点击后要回复什么文字？")
-
     elif state == 'add_kb_reply':
         bid = context.user_data.get('add_kb_bid')
         label = context.user_data.get('add_kb_label')
         reply = text.strip()
-        conn = get_db()
-        cur = conn.cursor()
+        conn = get_db(); cur = conn.cursor()
         cur.execute("SELECT token FROM bots WHERE id = %s", (bid,))
         row = cur.fetchone()
         if row:
@@ -346,15 +275,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cur.close(); conn.close()
         context.user_data.pop('state')
         await update.message.reply_text(f"✅ 底部键盘[{label}]已添加！")
-
     elif state == 'edit_welcome':
         bid = context.user_data.get('edit_welcome_bid')
         new_welcome = text.strip()
-        conn = get_db()
-        cur = conn.cursor()
+        conn = get_db(); cur = conn.cursor()
         cur.execute("UPDATE bots SET welcome_text = %s WHERE id = %s", (new_welcome, bid))
-        conn.commit()
-        cur.close(); conn.close()
+        conn.commit(); cur.close(); conn.close()
         context.user_data.pop('state')
         await update.message.reply_text("✅ 欢迎语已更新！")
 
@@ -378,8 +304,7 @@ async def handle_message_after(update: Update, context: ContextTypes.DEFAULT_TYP
         label = context.user_data.get('add_btn_label')
         btn_type = context.user_data.get('btn_type')
         data = update.message.text.strip()
-        conn = get_db()
-        cur = conn.cursor()
+        conn = get_db(); cur = conn.cursor()
         cur.execute("SELECT token FROM bots WHERE id = %s", (bid,))
         row = cur.fetchone()
         if row:
@@ -392,17 +317,16 @@ async def handle_message_after(update: Update, context: ContextTypes.DEFAULT_TYP
 
 def main():
     threading.Thread(target=run_flask, daemon=True).start()
-    # ✨ 关键修复点：使用 ApplicationBuilder 构建实例
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
+    # ✨ 彻底修复崩溃的核心修改：显式声明并绑定 JobQueue，并且依赖库已包含 [job-queue]
+    application = ApplicationBuilder().token(BOT_TOKEN).job_queue(JobQueue()).build()
     
-    # 注册所有处理器
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button_click))
     application.add_handler(CallbackQueryHandler(btn_type_callback, pattern="^btn_type_"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message_after))
 
-    # 启动监控定时任务（60秒检查一次后台子进程状态）
+    # 启动监控定时任务
     application.job_queue.run_repeating(monitor_bots, interval=60, first=5)
 
     logging.info("✅ 宫水编辑器已上线！")
