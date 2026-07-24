@@ -5,14 +5,20 @@ import psycopg2
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ApplicationBuilder
 
-# 从主配置导入数据库连接串
 from config import DATABASE_URL
 
-# 设置日志，输出到控制台
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 def get_db():
-    return psycopg2.connect(DATABASE_URL)
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        return conn
+    except Exception as e:
+        # 打印具体的失败原因！
+        logging.error(f"❌ 数据库连接绝对失败！请检查 DATABASE_URL 环境变量。")
+        logging.error(f"❌ 报错详情：{e}")
+        # 不直接调用 sys.exit，让上游捕获
+        raise e
 
 def init_db():
     try:
@@ -58,7 +64,6 @@ def load_bot_config(token):
 
 async def client_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     CLIENT_TOKEN = context.bot.token
-    logging.info(f"🟢 客户机器人收到 /start，Token: {CLIENT_TOKEN[:10]}...")
     welcome, btn_rows, kb_rows = load_bot_config(CLIENT_TOKEN)
     keyboard = [[InlineKeyboardButton(label, callback_data=str(bid))] for bid, label in btn_rows]
     reply_kb = ReplyKeyboardMarkup([[r[0]] for r in kb_rows], resize_keyboard=True) if kb_rows else None
@@ -68,7 +73,6 @@ async def client_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def client_reload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     CLIENT_TOKEN = context.bot.token
-    logging.info(f"🔄 客户机器人收到 /reload，Token: {CLIENT_TOKEN[:10]}...")
     welcome, btn_rows, kb_rows = load_bot_config(CLIENT_TOKEN)
     keyboard = [[InlineKeyboardButton(label, callback_data=str(bid))] for bid, label in btn_rows]
     reply_kb = ReplyKeyboardMarkup([[r[0]] for r in kb_rows], resize_keyboard=True) if kb_rows else None
