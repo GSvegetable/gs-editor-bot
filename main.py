@@ -9,8 +9,8 @@ import time
 import json
 import requests
 from flask import Flask
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ApplicationBuilder
 
 # ================= 引入数据库配置 =================
 from config import BOT_TOKEN, DATABASE_URL
@@ -104,20 +104,7 @@ if len(sys.argv) > 1 and sys.argv[1] == "--client":
         if row:
             await update.message.reply_text(row[0])
         else:
-            # 如果没匹配到底部键盘，直接发欢迎语或忽略
             pass
-
-    def build_client_keyboard(token):
-        conn = get_db(); cur = conn.cursor()
-        cur.execute("SELECT label FROM reply_keyboards WHERE bot_token = %s ORDER BY position", (token,))
-        rows = cur.fetchall()
-        cur.close(); conn.close()
-        if not rows: return None
-        return InlineKeyboardMarkup([[InlineKeyboardButton(r[0], callback_data="kb_"+r[0])]])
-
-    # 注意：底部键盘由ReplyKeyboard实现，这里简化用内联模拟
-    # 实际子进程应动态生成ReplyKeyboard
-    # 因为篇幅限制，我实现真正可用的版本：
 
     async def client_start_real(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn = get_db()
@@ -143,7 +130,6 @@ if len(sys.argv) > 1 and sys.argv[1] == "--client":
         kb_rows = cur.fetchall()
         cur.close(); conn.close()
         
-        from telegram import ReplyKeyboardMarkup
         reply_kb = None
         if kb_rows:
             reply_kb = ReplyKeyboardMarkup([[r[0]] for r in kb_rows], resize_keyboard=True)
@@ -406,15 +392,17 @@ async def handle_message_after(update: Update, context: ContextTypes.DEFAULT_TYP
 
 def main():
     threading.Thread(target=run_flask, daemon=True).start()
-    application = Application.builder().token(BOT_TOKEN).build()
+    # ✨ 关键修复点：使用 ApplicationBuilder 构建实例
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
     
+    # 注册所有处理器
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button_click))
     application.add_handler(CallbackQueryHandler(btn_type_callback, pattern="^btn_type_"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message_after))
 
-    # 启动监控任务
+    # 启动监控定时任务（60秒检查一次后台子进程状态）
     application.job_queue.run_repeating(monitor_bots, interval=60, first=5)
 
     logging.info("✅ 宫水编辑器已上线！")
