@@ -28,16 +28,13 @@ def init_db():
         CREATE TABLE IF NOT EXISTS reply_keyboards (id SERIAL PRIMARY KEY, bot_token TEXT REFERENCES bots(token) ON DELETE CASCADE, label TEXT NOT NULL, action_type TEXT NOT NULL, action_data TEXT NOT NULL, position INTEGER DEFAULT 0)
     """)
     
-    # ===== ✨ 新增修复：给旧数据库手动补上缺失的列 =====
     try:
-        # 给 reply_keyboards 表加上 action_type 和 action_data 列（如果不存在的话）
         cur.execute("ALTER TABLE reply_keyboards ADD COLUMN IF NOT EXISTS action_type TEXT DEFAULT 'reply_text'")
         cur.execute("ALTER TABLE reply_keyboards ADD COLUMN IF NOT EXISTS action_data TEXT DEFAULT ''")
         conn.commit()
         logging.info("✅ 数据库表结构修复成功！")
     except Exception as e:
         logging.warning(f"⚠️ 表结构更新提示: {e}")
-    # ==================================================
 
     conn.commit(); cur.close(); conn.close()
 
@@ -147,80 +144,80 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if state == 'waiting_token':
         token = text.strip()
         try:
-    如果数据==请求。得到(f"https://api.telegram.org/bot{ token }/getMe"，timeout=10)
-            如果RESP.status_code!=200: 等候更新。消息.回复文本(_T)("❌ Token无效"); 返回
-        除……之外: 等候更新。消息.回复文本(_T)("❌ 网络错误"); 返回
-Conn=get_db()；cur=conn.光标()
-cur.执行("插入到bots(令牌，owner_id)值(%s，%s)冲突时，不执行任何操作", (令牌，str(user_id)))
-Conn.犯罪()；cur.关闭()；conn.关闭()
-        start_client_bot(令牌)；上下文。user_data.流行音乐('状态')
-        等候更新。消息.回复文本(_T)(f"✅ 机器人已绑定并启动！")
-    Elif状态=='添加btn标签':
-bid=上下文。user_data.得到('Add_btn_bid')；label=文本。带()
-语境。user_data['添加btn标签']=标签；上下文。user_data['状态']='添加btn类型'
-键盘=[[InlineKeyboardButton("💬 回复文字"，callback_data="btn_type_reply")], [InlineKeyboardButton("🔗 跳转链接"，callback_data="btn_type_url")]]
-        等候更新。消息.回复文本(_T)(F"按钮名：{标签}\n点击后做什么？"，reply_markup=InlineKeyboardMarkup(键盘))
-    Elif状态=='Add_kb_label':
-bid=上下文。user_data.得到('Add_kb_bid')；label=文本。带()
-语境。user_data['Add_kb_label']=标签；上下文。user_data['状态']='Add_kb_type'
-键盘=[[InlineKeyboardButton("💬 回复文字"，callback_data="kb_type_reply")], [InlineKeyboardButton("🔗 跳转链接"，callback_data="kb_type_url")]]
-        等候更新。消息.回复文本(_T)(F"底部按钮：{标签}\n点击后做什么？"，reply_markup=InlineKeyboardMarkup(键盘))
-Elif'Edit_welcome':
-Conn=get_db()；cur=conn.光标()
-    main
-importelif状态==cur.执行("更新僵尸设置welcome_text=%s WHERE id=%s"，(新欢迎，出价(_W)))；conn.犯罪()("更新僵尸设置welcome_text=%s WHERE id=%s", (新欢迎，出价(_W)))；conn.犯罪()
-cur.关闭()；conn.关闭()；上下文。user_data。流行音乐('状态')关闭()；conn.关闭()；上下文。user_data.流行音乐('状态')
-        等候更新。消息.回复文本(_T)("✅ 欢迎语已更新！")回复文本(_T)("✅ 欢迎语已更新！")
+            resp = requests.get(f"https://api.telegram.org/bot{token}/getMe", timeout=10)
+            if resp.status_code != 200: await update.message.reply_text("❌ Token无效"); return
+        except: await update.message.reply_text("❌ 网络错误"); return
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("INSERT INTO bots (token, owner_id) VALUES (%s, %s) ON CONFLICT DO NOTHING", (token, str(user_id)))
+        conn.commit(); cur.close(); conn.close()
+        start_client_bot(token); context.user_data.pop('state')
+        await update.message.reply_text(f"✅ 机器人已绑定并启动！")
+    elif state == 'add_btn_label':
+        bid = context.user_data.get('add_btn_bid'); label = text.strip()
+        context.user_data['add_btn_label'] = label; context.user_data['state'] = 'add_btn_type'
+        keyboard = [[InlineKeyboardButton("💬 回复文字", callback_data="btn_type_reply")], [InlineKeyboardButton("🔗 跳转链接", callback_data="btn_type_url")]]
+        await update.message.reply_text(f"按钮名：{label}\n点击后做什么？", reply_markup=InlineKeyboardMarkup(keyboard))
+    elif state == 'add_kb_label':
+        bid = context.user_data.get('add_kb_bid'); label = text.strip()
+        context.user_data['add_kb_label'] = label; context.user_data['state'] = 'add_kb_type'
+        keyboard = [[InlineKeyboardButton("💬 回复文字", callback_data="kb_type_reply")], [InlineKeyboardButton("🔗 跳转链接", callback_data="kb_type_url")]]
+        await update.message.reply_text(f"底部按钮：{label}\n点击后做什么？", reply_markup=InlineKeyboardMarkup(keyboard))
+    elif state == 'edit_welcome':
+        bid = context.user_data.get('edit_welcome_bid'); new_welcome = text.strip()
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("UPDATE bots SET welcome_text = %s WHERE id = %s", (new_welcome, bid)); conn.commit()
+        cur.close(); conn.close(); context.user_data.pop('state')
+        await update.message.reply_text("✅ 欢迎语已更新！")
 
-主要的主要的))(尝试        (_P)：)：BTN_type_callback(更新：更新，上下文：ContextTypes。default_TYPE):
-查询=更新。callback_query；等候查询。回答()等候查询。回答()
-data=查询。数据
-如果数据=="BTN_type_reply”：上下文。user_data['状态']='添加BTN_data'；上下文。user_data['btn_type']='reply_text'；等候查询。编辑消息文本("📝 请输入点击后回复的文字：")"btn_type_reply"：上下文。user_data['状态']='添加btn_data'；上下文。user_data['btn_type']='reply_text'; 等候查询。编辑消息文本("📝 请输入点击后回复的文字：")
-Elif数据=="BTN_type_url"：上下文。user_data['状态']='添加BTN_data'；上下文。user_data['btn_type']='url'；等候查询。编辑消息文本("🔗 请输入跳转链接：")"btn_type_url"：上下文。user_data['状态']='添加btn_data'；上下文。user_data['btn_type']='url'; 等候查询。编辑消息文本("🔗 请输入跳转链接：")
+async def btn_type_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query; await query.answer()
+    data = query.data
+    if data == "btn_type_reply": context.user_data['state'] = 'add_btn_data'; context.user_data['btn_type'] = 'reply_text'; await query.edit_message_text("📝 请输入点击后回复的文字：")
+    elif data == "btn_type_url": context.user_data['state'] = 'add_btn_data'; context.user_data['btn_type'] = 'url'; await query.edit_message_text("🔗 请输入跳转链接：")
 
-异步定义KB_type_callback(更新：更新，上下文：ContextTypes.default_TYPE)：KB_type_callback(更新：更新，上下文：ContextTypes。default_TYPE):
-查询=更新。callback_query；等候查询。回答()等候查询。回答()
-data=查询。数据
-如果数据=="KB_type_reply“”：上下文。user_data['状态']='add_kb_data'；上下文。user_data['kb_type']='reply_text'；等候查询。编辑消息文本("📝 请输入点击后回复的文字：")"kb_type_reply"：上下文。user_data['状态']='Add_kb_data'；上下文。user_data['kb_type']='reply_text'; 等候查询。编辑消息文本("📝 请输入点击后回复的文字：")
-Elif数据=="KB_type_url"：上下文。user_data['状态']='add_kb_data'；上下文。user_data['kb_type']='url'；等候查询。编辑消息文本("🔗 请输入跳转链接：")"kb_type_url"：上下文。user_data['状态']='Add_kb_data'；上下文。user_data['kb_type']='url'; 等候查询。编辑消息文本("🔗 请输入跳转链接：")
+async def kb_type_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query; await query.answer()
+    data = query.data
+    if data == "kb_type_reply": context.user_data['state'] = 'add_kb_data'; context.user_data['kb_type'] = 'reply_text'; await query.edit_message_text("📝 请输入点击后回复的文字：")
+    elif data == "kb_type_url": context.user_data['state'] = 'add_kb_data'; context.user_data['kb_type'] = 'url'; await query.edit_message_text("🔗 请输入跳转链接：")
 
-异步定义handle_message_after(更新：更新，上下文：ContextTypes.default_TYPE)：handle_message_after(更新：更新，上下文：ContextTypes。default_TYPE):
-状态=上下文。user_data。得到('状态')得到('状态')
-如果状态=='添加BTN_data'：'添加btn_data':
-bid=上下文.User_data。得到('Add_btn_bid')；label=上下文。user_data.得到('添加btn标签')得到('Add_btn_bid')；label=上下文。user_data.得到('添加btn标签')
-BTN_type=上下文。user_data。得到('btn_type')；数据=更新。消息.文本.带()得到('btn_type')；data=update。消息.文本.带()
-Conn=get_db()；cur=conn.光标()get_db()；cur=conn.光标()()
-cur.执行("从bots中选择标记，ID=%s"，(出价，))执行("从bots中选择标记，ID=%s", (出价，))
-row=cur.取酮()取酮()
-        如果行：
-token=row[0][0]
-cur.执行("插入按钮(bot_token，标签，action_type，action_data)值(%s，%s，%s)"，(标记、标签、BTN_type、数据))；Conn.犯罪()执行("INSERT INTO按钮(bot_token，标签，action_type，action_data)值(%s，%s，%s)", (标记、标签、btn_type、数据))；conn.犯罪()
-cur.关闭()；conn.关闭()；上下文。user_data。流行音乐('状态')关闭()；conn.关闭()；上下文。user_data.流行音乐('状态')
-等候更新。消息.回复文本(_T)(f"✅ 按钮[{标签}]已添加！")回复文本(_T)(f"✅ 按钮[{标签}]已添加！")
-Elif状态=='Add_kb_data'：'Add_kb_data':
-bid=上下文.得到('Add_kb_bid')；label=上下文.user_data.得到('Add_kb_label')得到('Add_kb_bid')；label=上下文。user_data.得到('Add_kb_label')
-KB_type=上下文。user_data。得到('kb_type')；数据=更新。消息.文本.带()得到('kb_type')；data=update。消息.文本.带()
-Conn=get_db()；cur=conn.光标()get_db()；cur=conn.光标()
-cur.执行("从bots中选择标记，ID=%s"，(出价，))执行("从bots中选择标记，ID=%s", (出价，))
-row=cur.取酮()取酮()
-        如果行：
-token=row[0][0]
-cur.执行("插入应答键盘(bot_token，标签，action_type，action_data)值(%s，%s，%s)"，(标记、标签、KB_type、数据))；Conn.犯罪()执行("INSERT INTO应答键盘(bot_token，标签，action_type，action_data)值(%s，%s，%s)", (标记、标签、kb_type、数据))；conn.犯罪()
-cur.关闭()；conn.关闭()；上下文。user_data。流行音乐('状态')关闭()；conn.关闭()；上下文。user_data.流行音乐('状态')
-        等候更新。消息.回复文本(_T)(f"✅ 底部键盘[{标签}]已添加！")回复文本(_T)(f"✅ 底部键盘[{标签}]已添加！")
+async def handle_message_after(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = context.user_data.get('state')
+    if state == 'add_btn_data':
+        bid = context.user_data.get('add_btn_bid'); label = context.user_data.get('add_btn_label')
+        btn_type = context.user_data.get('btn_type'); data = update.message.text.strip()
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("SELECT token FROM bots WHERE id = %s", (bid,))
+        row = cur.fetchone()
+        if row:
+            token = row[0]
+            cur.execute("INSERT INTO buttons (bot_token, label, action_type, action_data) VALUES (%s, %s, %s, %s)", (token, label, btn_type, data)); conn.commit()
+        cur.close(); conn.close(); context.user_data.pop('state')
+        await update.message.reply_text(f"✅ 按钮[{label}]已添加！")
+    elif state == 'add_kb_data':
+        bid = context.user_data.get('add_kb_bid'); label = context.user_data.get('add_kb_label')
+        kb_type = context.user_data.get('kb_type'); data = update.message.text.strip()
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("SELECT token FROM bots WHERE id = %s", (bid,))
+        row = cur.fetchone()
+        if row:
+            token = row[0]
+            cur.execute("INSERT INTO reply_keyboards (bot_token, label, action_type, action_data) VALUES (%s, %s, %s, %s)", (token, label, kb_type, data)); conn.commit()
+        cur.close(); conn.close(); context.user_data.pop('state')
+        await update.message.reply_text(f"✅ 底部键盘[{label}]已添加！")
 
-定义 主要的():主要的():
-穿线。线(目标=运行Blask(_B)，守护程序=正确).开始()(目标=run_blask，守护程序=正确).开始()
-穿线。线(目标=监视循环，守护程序=正确).开始()(目标=监视循环，守护程序=正确).开始()
-应用程序=ApplicationBuilder().令牌(bot_TOKEN)。建立()ApplicationBuilder().令牌(bot_TOKEN).建立()
-应用。add_handler(CommandHandler)("开始"，开始))(CommandHandler("开始"，开始))
-应用。add_handler(CallbackQueryHandler(button_click))(CallbackQueryHandler(button_click))
-应用。add_handler(CallbackQueryHandler(BTN_type_callback，模式="^btn_type_"))(CallbackQueryHandler(BTN_type_callback，模式="^btn_type_"))
-应用。add_handler(CallbackQueryHandler(KB_type_callback，模式="^kb_type_"))(CallbackQueryHandler(KB_type_callback，模式="^kb_type_"))
-应用。添加处理程序(MessageHandler)(_H)(过滤器。文本筛选器(&~F).命令，句柄消息(_message)))(MessageHandler(过滤器。文本筛选器(&~F)。命令，句柄消息(_message)))
-应用。添加处理程序(MessageHandler)(_H)(过滤器。文本筛选器(&~F).命令，handle_message_after))(MessageHandler(过滤器。文本筛选器(&~F)。命令，handle_message_after))
-采运作业。信息("✅ 宫水编辑器（直传版）已上线！")("✅ 宫水编辑器（直传版）已上线！")
-应用。运行轮询(_P)()(_P)()
+def main():
+    threading.Thread(target=run_flask, daemon=True).start()
+    threading.Thread(target=monitor_loop, daemon=True).start()
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(button_click))
+    application.add_handler(CallbackQueryHandler(btn_type_callback, pattern="^btn_type_"))
+    application.add_handler(CallbackQueryHandler(kb_type_callback, pattern="^kb_type_"))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message_after))
+    logging.info("✅ 宫水编辑器（直传版）已上线！")
+    application.run_polling()
 
-如果__名称__=="__main__"："__main__":
-主要的主要的)
+if __name__ == "__main__":
+    main()
